@@ -1,0 +1,7 @@
+frames/
+*.csv
+__pycache__/
+*.pyc
+*.log
+frames_old/
+config.json
