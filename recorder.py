@@ -27,7 +27,7 @@ def br(): cfg["right"], cfg["bottom"] = cur(); save(); print("右下角", cfg["r
 def tog():
     if cfg["right"] <= cfg["left"]: print("先用 F8/F9 框游戏窗口"); return
     st["rec"] = not st["rec"]
-    print("● 录制中" if st["rec"] else "■ 停止")
+    print("[*] 录制中" if st["rec"] else "[#] 停止")
 keyboard.add_hotkey("f8", tl); keyboard.add_hotkey("f9", br)
 keyboard.add_hotkey("f6", tog); keyboard.add_hotkey("f10", lambda: st.update(quit=True))
 

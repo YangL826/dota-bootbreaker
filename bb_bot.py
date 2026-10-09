@@ -160,7 +160,7 @@ def main():
         cfg["right"], cfg["bottom"] = cur(); json.dump(cfg, open(CFGF, "w"), indent=2)
         print("右下角", cfg["right"], cfg["bottom"], "已保存；尺寸", cfg["right"] - cfg["left"], cfg["bottom"] - cfg["top"], "(应约 936x927)")
     keyboard.add_hotkey("f8", tl); keyboard.add_hotkey("f9", br)
-    keyboard.add_hotkey("f6", lambda: (st.update(run=not st["run"]), print("▶ 运行" if st["run"] else "⏸ 暂停")))
+    keyboard.add_hotkey("f6", lambda: (st.update(run=not st["run"]), print("[>] 运行" if st["run"] else "[||] 暂停")))
     keyboard.add_hotkey("f7", lambda: st.update(snap=True))
     keyboard.add_hotkey("f10", lambda: st.update(quit=True))
 
@@ -203,7 +203,7 @@ def main():
                 release_all(); time.sleep(0.05); continue
             if not fg_ok():
                 release_all()
-                if not fg_warned: print("⚠ Dota 不在前台，暂停按键"); fg_warned = True
+                if not fg_warned: print("[!] Dota 不在前台，暂停按键"); fg_warned = True
                 time.sleep(0.1); continue
             fg_warned = False
             t = time.time()
