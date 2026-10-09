@@ -33,12 +33,14 @@ def detect(img):
     comb = cv2.dilate((boot & near) | arc, np.ones((5, 5), np.uint8))
     n, lab, st, cen = cv2.connectedComponentsWithStats(comb)
     cands = []
+    if n > 1:
+        acs = np.bincount(lab.ravel(), weights=arc.ravel(), minlength=n)
+        bcs = np.bincount(lab.ravel(), weights=boot.ravel(), minlength=n)
     for i in range(1, n):
         w, h = st[i, 2], st[i, 3]
         if w > 90 or h > 90:
             continue
-        m = lab == i
-        ac = int(arc[m].sum()); bc = int(boot[m].sum())
+        ac = int(acs[i]); bc = int(bcs[i])
         if ac >= 22 and bc >= 15:
             cands.append((cen[i][0] + FX0, cen[i][1] + FY0, ac + bc))
     r = hsv[PAD_Y0:PAD_Y1, FX0:FX1]
@@ -55,10 +57,20 @@ def detect(img):
 class BallTracker:
     """自上次反弹以来的位置历史 + 线性拟合。
     反弹判定：新点偏离预测 >45px，或最近 3 点的走向与拟合速度夹角 >70°（且速度够大）。"""
-    MAXH = 12
+    MAXH = 40          # 循环约 57 帧/秒；12 点只够 0.2 秒，拟合噪声大（实测 40 点落点误差 46→20px）
     def __init__(self):
         self.h = []; self.last_seen = 0
+        self.black = []          # 静止误检的位置（第五关左上角那种），换关时清空
     def update(self, t, cands):
+        if self.black:
+            tracking = self.h and t - self.h[-1][0] < 0.3
+            pp = self.predict_pos(t) if tracking else None
+            def ok(c):
+                # 正在跟踪的球经过拉黑位置时不屏蔽（只屏蔽远离预测位置的静止误检）
+                if pp and math.hypot(c[0] - pp[0], c[1] - pp[1]) < 40:
+                    return True
+                return all(math.hypot(c[0] - bx, c[1] - by) > 35 for bx, by in self.black)
+            cands = [c for c in cands if ok(c)]
         pick = None
         if cands:
             if self.h and t - self.h[-1][0] < 0.3:
@@ -180,7 +192,8 @@ def main():
     os.makedirs(os.path.join(HERE, "debug"), exist_ok=True)
     logq = queue.Queue()
     def logger():
-        f = open(os.path.join(HERE, "bot_telemetry.csv"), "w", newline="")
+        os.makedirs(os.path.join(HERE, "runs"), exist_ok=True)
+        f = open(os.path.join(HERE, "runs", time.strftime("run_%m%d_%H%M%S.csv")), "w", newline="")
         w = csv.writer(f); w.writerow(["t", "bx", "by", "vx", "vy", "pad", "target", "act", "mode"])
         while True:
             r = logq.get()
@@ -197,6 +210,15 @@ def main():
     t0 = time.time(); fg_warned = False
     last_replay = 0; games = 0
     BTN = cv2.imread(os.path.join(HERE, "replay_btn.png"))
+    GX0, GY0, GX1, GY1 = 160, 90, 780, 830          # 只截场地（含挡板和“再玩一次”按钮）
+    canvas = np.zeros((cfg["bottom"] - cfg["top"], cfg["right"] - cfg["left"], 3), np.uint8)
+    nloop = 0; tfps = time.time(); static_snapped = False
+    level_snap_at = t0 + 2; still_since = None; last_target = None; last_throw = None
+    def snap(im, tag):
+        try:
+            cv2.imwrite(os.path.join(HERE, "debug", f"{tag}_{time.time() - t0:07.1f}.jpg"), im)
+        except Exception:
+            pass
     with (mss.MSS() if hasattr(mss, "MSS") else mss.mss()) as sct:
         while not st["quit"]:
             if not st["run"]:
@@ -207,12 +229,31 @@ def main():
                 time.sleep(0.1); continue
             fg_warned = False
             t = time.time()
-            mon = {"left": cfg["left"], "top": cfg["top"], "width": cfg["right"] - cfg["left"], "height": cfg["bottom"] - cfg["top"]}
-            img = np.array(sct.grab(mon))[:, :, :3]
+            mon = {"left": cfg["left"] + GX0, "top": cfg["top"] + GY0, "width": GX1 - GX0, "height": GY1 - GY0}
+            canvas[GY0:GY1, GX0:GX1] = np.asarray(sct.grab(mon))[:, :, :3]
+            img = canvas
             if st["snap"]:
                 cv2.imwrite(os.path.join(HERE, "debug", f"{t:.2f}.png"), img); st["snap"] = False; print("截图已存")
             cands, pad = detect(img)
             ball = tr.update(t, cands)
+            # 看门狗：球在半空静止不动 >0.6s = 误检，拉黑这个位置并截图
+            still = False
+            if ball and tr.n() >= 6 and ball[1] < 735:
+                vx_, vy_ = tr.vel(); still = math.hypot(vx_, vy_) < 30
+            if not still:
+                still_since = None
+            else:
+                if still_since is None: still_since = t
+                if t - still_since > 0.6:
+                    still_since = None
+                    tr.black.append((ball[0], ball[1])); tr.h = []; ball = None
+                    print(f"[!] ({tr.black[-1][0]:.0f},{tr.black[-1][1]:.0f}) 静止误检，已忽略")
+                    if not static_snapped: snap(img, "static"); static_snapped = True
+            # 换关/重开后存一张关卡全貌，方便以后分析
+            if pad and no_pad_since is not None and t - no_pad_since > 1.0:
+                tr.black = []; level_snap_at = t + 1.5; static_snapped = False
+            if level_snap_at and t > level_snap_at:
+                snap(img, "level"); level_snap_at = None
             act = "-"; target = None; mode = ""
             if pad:
                 no_pad_since = None
@@ -224,7 +265,14 @@ def main():
                 if ball and tr.n() >= 6:
                     vx_, vy_ = tr.vel()
                     on_cart = ball[1] > 735 and math.hypot(vx_, vy_) < 60
-                if ball and not on_cart:
+                coasting = (not ball) and last_target is not None and t - tr.last_seen < 0.4
+                if coasting:
+                    # 球短暂丢失（被特效/文字挡住）：继续朝最后的目标走，不要停
+                    err = last_target - pad[0]
+                    if abs(err) > 15: hold("right" if err > 0 else "left"); act = "coast"
+                    else: hold(None); act = "stop"
+                    target = last_target; mode = "coast"
+                elif ball and not on_cart:
                     no_ball_since = None; serve_step = 0
                     bx, by = tr.pos(); vx, vy = tr.vel()
                     lx = landing_x(bx, by, vx, vy) if tr.n() >= 4 else None
@@ -233,22 +281,29 @@ def main():
                     else:
                         target, mode = bx, "follow"   # 球往上飞：先跟着球的 x
                     target = min(max(target, PAD_MIN), PAD_MAX)
+                    last_target = target
                     err = target - pad[0]
-                    brake = 12 + 0.06 * abs(pv)       # 松键后还会滑 20-30px
+                    brake = 15 + 0.08 * abs(pv)       # 松键后还会滑 20-30px
                     moving_toward = (pv > 50 and err > 0) or (pv < -50 and err < 0)
                     if abs(err) > (brake if moving_toward else 10):
                         hold("right" if err > 0 else "left"); act = "R" if err > 0 else "L"
                     else:
                         hold(None); act = "stop"
                 else:
-                    release_all()
                     if no_ball_since is None: no_ball_since = t
+                    if serve_step == 0 and 0 < t - last_serve < 3 and last_throw and t - last_throw < 3:
+                        # 刚扔出但还没认出球：挡板先回中间，离哪边都近
+                        err = 469 - pad[0]
+                        if abs(err) > 20: hold("right" if err > 0 else "left"); act = "center"
+                        else: hold(None)
+                    else:
+                        release_all()
                     # 球不在场上 = 等发球：空格锁车位 → 等瞄准线 → 空格扔出
                     if t - no_ball_since > 0.8:
                         if serve_step == 0 and t - last_serve > 2.5:
                             key_tap("space"); serve_step = 1; last_serve = t; act = "lock"
                         elif serve_step == 1 and t - last_serve > 0.7:
-                            key_tap("space"); serve_step = 0; last_serve = t; act = "throw"
+                            key_tap("space"); serve_step = 0; last_serve = t; act = "throw"; last_throw = t
                             no_ball_since = t
             else:
                 release_all()
@@ -270,6 +325,9 @@ def main():
                       f"{ball[0]:.0f}" if ball else "", f"{ball[1]:.0f}" if ball else "",
                       f"{tr.vel()[0]:.0f}" if ball else "", f"{tr.vel()[1]:.0f}" if ball else "",
                       f"{pad[0]:.0f}" if pad else "", f"{target:.0f}" if target is not None else "", act, mode])
+            nloop += 1
+            if t - tfps > 30:
+                print(f"[i] 循环 {nloop / (t - tfps):.0f} 帧/秒"); nloop = 0; tfps = t
             dt = time.time() - t
             if dt < 0.008: time.sleep(0.008 - dt)
     release_all(); logq.put(None); time.sleep(0.2); print("退出")

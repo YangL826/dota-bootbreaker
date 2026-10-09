@@ -1,7 +1,12 @@
 frames/
+frames_old/
+runs/
+debug/
 *.csv
+*.jpg
+analysis/*.png
 __pycache__/
 *.pyc
 *.log
-frames_old/
 config.json
+bb_bot_v1_backup.py
